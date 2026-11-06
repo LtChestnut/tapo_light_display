@@ -19,9 +19,10 @@ void setup() {
     Serial.printf("[app] wake pin mask 0x%llx\n", pins);
   }
 
+  // Start Wi-Fi first so it joins while the display initialises (~1 s) on the other core.
+  lights::begin(fromSleep);  // Wi-Fi + Tapo I/O run on core 0; LVGL stays on this loop (core 1)
   hal::begin();
   Serial.printf("[app] supply %.2f V, haptics %s\n", hal::supplyVolts(), hal::hasHaptics() ? "yes" : "no");
-  lights::begin(fromSleep);  // Wi-Fi + Tapo I/O run on core 0; LVGL stays on this loop (core 1)
   ui::begin();
   Serial.printf("[app] UI up at %lu ms after boot\n", millis());
 }

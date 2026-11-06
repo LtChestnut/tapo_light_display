@@ -218,10 +218,42 @@ void serviceTask(void *) {
     memset(authHash, 0, sizeof(authHash));
   }
 
+  // Stage timing for the wake-latency investigation (join vs. address vs. first command).
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_STA_START:
+        Serial.printf("[wifi] %6lu ms  radio started\n", millis());
+        break;
+      case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        Serial.printf("[wifi] %6lu ms  associated (ch %u)\n", millis(), info.wifi_sta_connected.channel);
+        break;
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        Serial.printf("[wifi] %6lu ms  got IP\n", millis());
+        break;
+      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+        Serial.printf("[wifi] %6lu ms  disconnected, reason %u\n", millis(), info.wifi_sta_disconnected.reason);
+        break;
+      default:
+        break;
+    }
+  });
+
+  WiFi.persistent(false);  // don't rewrite the Wi-Fi config to flash on every boot/wake
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("tapo-knob");
   WiFi.setSleep(false);  // power save adds 100+ ms latency to every request
   WiFi.setAutoReconnect(true);
+#ifdef KNOB_IP
+  // Fixed address (reserved on the router): skips the DHCP exchange on every wake.
+  {
+    IPAddress ip, gw, mask, dns;
+    ip.fromString(KNOB_IP);
+    gw.fromString(KNOB_GATEWAY);
+    mask.fromString(KNOB_SUBNET);
+    dns.fromString(KNOB_DNS);
+    WiFi.config(ip, gw, mask, dns);
+  }
+#endif
   // After deep sleep, go straight to the known AP/channel instead of scanning (~1-2 s saved).
   const bool fast = s_apChannel > 0;
   if (fast) WiFi.begin(WIFI_SSID, WIFI_PASSWORD, s_apChannel, s_apBssid, true);

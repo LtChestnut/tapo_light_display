@@ -29,7 +29,7 @@ The **dial is the main control**. The touchscreen is used for swipes only, plus 
 |---|---|---|
 | Active | any input | full speed |
 | Screen off | 20 s idle | Wi-Fi power-save; the next input responds instantly. The waking input does nothing else. |
-| Deep sleep | 45 s idle, **on battery only** | Twist the dial to wake. The screen is back in ~1 s on the same page; Wi-Fi reconnects in ~4–7 s (being improved). |
+| Deep sleep | 45 s idle, **on battery only** | Twist the dial to wake. Wi-Fi is back in ~0.5 s and the screen in ~1 s, on the same page. |
 
 On USB it never deep sleeps, so the serial port stays up for flashing. Timeouts and touch-to-wake are set in `src/config.h`.
 
@@ -156,7 +156,7 @@ CLAUDE.md             Working notes for Claude Code
 Done: bring-up, Wi-Fi, KLAP client, controller UI, colour/temperature modes, haptics, battery indicator, display sleep, deep sleep with twist-to-wake, second ESP32 put to sleep.
 
 Next:
-1. **Faster wake:** Wi-Fi reconnect takes 4–7 s after deep sleep (a static IP and a fix for the cached-AP connect should get it near 1 s). Some first requests after a wake also fail with "no HTTP status" and retry.
+1. **Wake check:** fixed IP + Wi-Fi-first boot cut a cold boot to Wi-Fi from 6.7 s to 0.5 s. Confirm the same on a real deep-sleep wake, and look at the occasional "no HTTP status" on the first request after a wake.
 2. **Measure battery life** (700 mAh cell), and decide whether touch-to-wake is affordable.
 3. On-device setup (captive portal) instead of `secrets.h`; OTA updates.
 
