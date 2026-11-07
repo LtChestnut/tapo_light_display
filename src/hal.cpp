@@ -43,6 +43,13 @@ IRAM_ATTR bool onDrawDone(void *user) {
   return false;
 }
 
+// Press-and-hold tracking for the secret menu (independent of which LVGL object is hit).
+bool s_touchDown = false;
+bool s_touchMoved = false;
+uint32_t s_touchStartMs = 0;
+int s_touchX0 = 0, s_touchY0 = 0;
+constexpr int kHoldMaxMovePx = 25;
+
 void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   auto *tp = static_cast<ESP_PanelTouch *>(drv->user_data);
   ESP_PanelTouchPoint pt;
@@ -50,8 +57,19 @@ void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     data->point.x = pt.x;
     data->point.y = pt.y;
     data->state = LV_INDEV_STATE_PRESSED;
+    if (!s_touchDown) {
+      s_touchDown = true;
+      s_touchMoved = false;
+      s_touchStartMs = millis();
+      s_touchX0 = pt.x;
+      s_touchY0 = pt.y;
+    } else {
+      const int dx = pt.x - s_touchX0, dy = pt.y - s_touchY0;
+      if (dx * dx + dy * dy > kHoldMaxMovePx * kHoldMaxMovePx) s_touchMoved = true;
+    }
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
+    s_touchDown = false;
   }
 }
 
@@ -287,6 +305,13 @@ void setBacklight(uint8_t percent) {
 int32_t takeKnobDelta() { return s_knobDelta.exchange(0); }
 
 bool hasHaptics() { return s_haptics; }
+
+uint32_t centreHoldMs(int radiusPx) {
+  if (!s_touchDown || s_touchMoved) return 0;
+  const int dx = s_touchX0 - LCD_WIDTH / 2, dy = s_touchY0 - LCD_HEIGHT / 2;
+  if (dx * dx + dy * dy > radiusPx * radiusPx) return 0;
+  return millis() - s_touchStartMs;
+}
 
 void service() {}
 

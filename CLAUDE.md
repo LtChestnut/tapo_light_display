@@ -14,6 +14,7 @@ Firmware for a Guition **JC3636K518** ESP32-S3 round knob display that controls 
 | `src/st77916_init.h` | Vendor LCD init command table |
 | `src/tapo_klap.*` | KLAP v2 client: `KlapCipher` (pure crypto, unit-tested) + `KlapClient` (raw `WiFiClient` HTTP, handshake, retry) |
 | `src/lights.*` | Wi-Fi + background FreeRTOS task (core 0). Per-bulb cached state, pending changes (latest wins), rate-limited sends, 5 s polling |
+| `src/battery.*` | Supply voltage, USB detection, V → % curve, discharge calibration log + processing, `cal …` serial commands |
 | `src/ui.*` | LVGL screen. **No tap actions**: the touchscreen is swipe-only, because missed swipes kept toggling lights. Swipe L/R: All + one page per bulb. All page: dial right = switch on the remembered set (NVS `knob/allMask`, the bulbs that were on at the last all-off; empty = all), dial left = remember, then all off. Bulb page: swipe up/down cycles Brightness (arc) → Temperature (gradient ring + arrow) → Colour (hue wheel + arrow); dial adjusts with acceleration (2 %/100 K/5° per slow detent, ×2/×4 fast), brightness 0 % = off. Backlight off after 30 s idle; the waking twist/touch is swallowed. Battery indicator in the dial gap |
 | `src/secrets.h` | **Git-ignored.** Wi-Fi + Tapo creds + bulb IPs. Template: `src/secrets.example.h` |
 | `include/lv_conf.h` | LVGL 8 config (RGB565, `LV_COLOR_16_SWAP 1`, Montserrat 14–48) |
@@ -71,6 +72,13 @@ Flashing the test overwrites the app; re-run `pio run -t upload` afterwards. To 
 - Wake = reboot with cause EXT1. The wake pins are still on the RTC mux, so `initKnob()` calls `rtc_gpio_deinit`. A knob pin already low at boot is the waking twist and isn't counted. UI page/mode use `RTC_DATA_ATTR`.
 - Measured (bench, 2026-11-07): UI up ~0.93 s after the twist; Wi-Fi up at 4.4–7.2 s (the cached-AP `WiFi.begin(..., channel, bssid)` failed once and fell back to scanning); first command ~0.6–0.8 s after Wi-Fi. A couple of "no HTTP status" errors on the first requests after wake. Root cause found: **DHCP took ~5 s** on this router. The fix is an optional fixed IP (`KNOB_IP`/`KNOB_GATEWAY`/`KNOB_SUBNET`/`KNOB_DNS` in `secrets.h`; the LAN is a /22, so 255.255.252.0), `WiFi.persistent(false)`, and starting `lights::begin()` before `hal::begin()` so Wi-Fi joins while the LCD initialises. Cold boot now: radio 295 ms, associated 475 ms, Wi-Fi up 497 ms, UI up 1066 ms. `[wifi]` event lines log each stage.
 - Bench-test sleep over USB: `PLATFORMIO_BUILD_FLAGS="-DDEEP_SLEEP_ON_USB=1 -DSCREEN_TIMEOUT_MS=8000 -DDEEP_SLEEP_AFTER_MS=15000" pio run -t upload`. While it sleeps COM7 disappears, so twist to wake it before flashing.
+
+## Battery, calibration and the secret menu (src/battery.cpp, ui.cpp)
+
+- `battery::` owns the supply reading (5 s samples, 0.7/0.3 smoothing), USB detection with hysteresis (USB above 4.30 V, battery below 4.22 V; USB sags to ~4.36 V under boot load) and V → %. The generic Li-ion table is used until a measured curve exists in NVS (`battery/curve`, 11 × uint16 mV at 0..100 %).
+- Calibration: Start (secret menu) arms it; logging starts once USB is unplugged. While armed or running there's no screen timeout and no sleep (constant load). Every 30 s it appends `{uint32 t_s, uint16 mV, uint16 0}` to LittleFS `/cal.bin` (partition `spiffs`), opening and closing the file each time. NVS `calState`=Running at boot means the battery died: `processLog()` assumes constant current, so SoC = 1 − t/T, smooths over 5 samples, interpolates 11 points and enforces monotonic order. Runs shorter than 30 min or ending above 3.5 V are rejected. Verified with a synthetic linear log (`-DCAL_SELFTEST`, `cal synth`): output within 2 mV of exact.
+- Serial commands: `cal status`, `cal dump` (CSV t_s,mV), `cal reprocess`, `cal reset` (clears curve, log and last result).
+- Secret menu: hold a finger still (<25 px movement) within 90 px of centre for 10 s (`hal::centreHoldMs`) to toggle. It's on `lv_layer_top`, so swipes don't reach the pages, and the dial is ignored while it's open. It shows `v` + `FW_VERSION` (config.h) + `GIT_HASH` (from `scripts/git_version.py`, `+` = uncommitted changes), Wi-Fi SSID/RSSI/IP, each bulb with its IP and reachability, and battery V and curve type, followed by the calibration controls.
 
 ## Tapo KLAP v2 (as implemented in `src/tapo_klap.cpp`, verified against python-kasa)
 

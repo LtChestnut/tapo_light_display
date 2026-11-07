@@ -20,6 +20,9 @@ int32_t takeKnobDelta();
 // Housekeeping hook called from loop() (currently nothing).
 void service();
 
+// How long a finger has been held still within radiusPx of the screen centre (0 if not).
+uint32_t centreHoldMs(int radiusPx);
+
 // Haptic feedback (no-op if the DRV2605 didn't answer on the I2C bus).
 enum class Haptic : uint8_t { Tick, Click, Bump };
 void haptic(Haptic h);

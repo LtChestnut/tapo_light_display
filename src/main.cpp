@@ -2,6 +2,7 @@
 #include <esp_sleep.h>
 #include <lvgl.h>
 
+#include "battery.h"
 #include "config.h"
 #include "hal.h"
 #include "lights.h"
@@ -22,7 +23,9 @@ void setup() {
   // Start Wi-Fi first so it joins while the display initialises (~1 s) on the other core.
   lights::begin(fromSleep);  // Wi-Fi + Tapo I/O run on core 0; LVGL stays on this loop (core 1)
   hal::begin();
-  Serial.printf("[app] supply %.2f V, haptics %s\n", hal::supplyVolts(), hal::hasHaptics() ? "yes" : "no");
+  battery::begin();  // after hal (ADC); finishes a calibration run the battery ended
+  Serial.printf("[app] v%s #%s, supply %.2f V, haptics %s\n", FW_VERSION, GIT_HASH, battery::volts(),
+                hal::hasHaptics() ? "yes" : "no");
   ui::begin();
   Serial.printf("[app] UI up at %lu ms after boot\n", millis());
 }
@@ -34,6 +37,7 @@ void loop() {
     Serial.printf("[app] supply %.2f V\n", hal::supplyVolts());
   }
   hal::service();
+  battery::service();
   ui::tick(hal::takeKnobDelta());
   lv_timer_handler();
 

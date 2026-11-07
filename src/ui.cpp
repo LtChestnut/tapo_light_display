@@ -2,9 +2,11 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <esp_attr.h>
 #include <lvgl.h>
 
+#include "battery.h"
 #include "config.h"
 #include "hal.h"
 #include "lights.h"
@@ -235,39 +237,21 @@ void render() {
   else renderBulb();
 }
 
-// ---- Battery ----------------------------------------------------------------
-//
-// The supply sense reads the battery directly when unplugged. On USB it reads VBUS through
-// a diode (~4.6-5 V) and the charger's status pin isn't wired to the S3, so we can only
-// say "on USB" there, not the battery's state of charge.
-constexpr float kUsbThresholdV = 4.30f;  // full cell is 4.2 V; USB reads ~4.45-4.5 V
-constexpr uint32_t kBattSampleMs = 5000;
-float s_battV = 0;
+// ---- Battery indicator -------------------------------------------------------
+// Voltage, USB detection and the V -> % curve live in battery.cpp. On USB the supply sense
+// reads VBUS, not the cell, and the charger's status pin isn't wired to the S3, so we can
+// only say "on USB" there.
 uint32_t s_battMs = 0;
 
-// Typical Li-ion resting curve (V -> %), linear between points.
-int liionPercent(float v) {
-  static const float kV[] = {3.30f, 3.50f, 3.65f, 3.75f, 3.85f, 3.95f, 4.05f, 4.15f};
-  static const int kP[] = {0, 5, 20, 40, 60, 75, 90, 100};
-  if (v <= kV[0]) return 0;
-  for (int i = 1; i < 8; ++i) {
-    if (v <= kV[i]) return kP[i - 1] + static_cast<int>((v - kV[i - 1]) / (kV[i] - kV[i - 1]) * (kP[i] - kP[i - 1]));
-  }
-  return 100;
-}
-
 void updateBattery(bool force) {
-  if (!force && millis() - s_battMs < kBattSampleMs) return;
+  if (!force && millis() - s_battMs < 5000) return;
   s_battMs = millis();
-  const float v = hal::supplyVolts();
-  s_battV = (s_battV == 0 || force) ? v : s_battV * 0.7f + v * 0.3f;  // light smoothing
-
-  if (s_battV >= kUsbThresholdV) {
+  if (battery::onUsb()) {
     lv_label_set_text(s_batt, LV_SYMBOL_USB " " LV_SYMBOL_CHARGE);
     lv_obj_set_style_text_color(s_batt, kDimText, 0);
     return;
   }
-  const int pct = liionPercent(s_battV);
+  const int pct = battery::percent();
   const char *sym = pct > 80 ? LV_SYMBOL_BATTERY_FULL
                   : pct > 55 ? LV_SYMBOL_BATTERY_3
                   : pct > 30 ? LV_SYMBOL_BATTERY_2
@@ -276,6 +260,132 @@ void updateBattery(bool force) {
   lv_label_set_text_fmt(s_batt, "%s %d%%", sym, pct);
   lv_obj_set_style_text_color(s_batt, pct <= 10 ? lv_color_hex(0xFF5040) : kDimText, 0);
 }
+
+// ---- Secret menu: debug info + battery calibration ----------------------------
+// Open/close by holding a finger still on the screen centre for 10 s. Lives on the top
+// layer, so the screen's swipe handler never sees touches on it.
+constexpr uint32_t kMenuHoldMs = 10000;
+constexpr int kMenuHoldRadiusPx = 90;
+lv_obj_t *s_menu = nullptr, *s_menuInfo, *s_menuCal, *s_menuBtnLabel;
+bool s_menuOpen = false;
+bool s_holdLatched = false;  // one toggle per hold
+uint32_t s_menuRefreshMs = 0;
+
+void menuRefresh() {
+  // Debug info.
+  char buf[640];
+  int n = snprintf(buf, sizeof(buf), "v" FW_VERSION "  #" GIT_HASH "\n");
+  if (WiFi.status() == WL_CONNECTED) {
+    n += snprintf(buf + n, sizeof(buf) - n, "Wi-Fi: %s (%d dBm)\nIP %s\n", WiFi.SSID().c_str(), WiFi.RSSI(),
+                  WiFi.localIP().toString().c_str());
+  } else {
+    n += snprintf(buf + n, sizeof(buf) - n, "Wi-Fi: not connected\n");
+  }
+  for (int i = 0; i < lights::count() && n < static_cast<int>(sizeof(buf)) - 64; ++i) {
+    const lights::Bulb b = lights::get(i);
+    n += snprintf(buf + n, sizeof(buf) - n, "%s %s  %s\n", b.reachable ? LV_SYMBOL_OK : LV_SYMBOL_CLOSE, b.name,
+                  lights::ip(i));
+  }
+  snprintf(buf + n, sizeof(buf) - n, "Battery %.3f V%s, %s curve", battery::volts(), battery::onUsb() ? " (USB)" : "",
+           battery::calibrated() ? "calibrated" : "generic");
+  lv_label_set_text(s_menuInfo, buf);
+
+  // Calibration.
+  const char *last = battery::calLastResult();
+  switch (battery::calState()) {
+    case battery::CalState::Idle:
+      lv_label_set_text_fmt(s_menuCal,
+                            "Battery calibration: charge fully, press Start, then unplug. "
+                            "Runs flat out until the battery dies (a few hours). "
+                            "The new curve is applied on the next boot.%s%s",
+                            last[0] ? "\nLast run: " : "", last);
+      lv_label_set_text(s_menuBtnLabel, "Start calibration");
+      break;
+    case battery::CalState::Armed:
+      lv_label_set_text(s_menuCal, "Armed. Unplug USB to start logging.");
+      lv_label_set_text(s_menuBtnLabel, "Cancel");
+      break;
+    case battery::CalState::Running: {
+      const uint32_t t = battery::calElapsedS();
+      lv_label_set_text_fmt(s_menuCal, "Logging %lu:%02lu:%02lu, %lu samples.\nLeave it running until it switches off.",
+                            static_cast<unsigned long>(t / 3600), static_cast<unsigned long>((t / 60) % 60),
+                            static_cast<unsigned long>(t % 60), static_cast<unsigned long>(battery::calSamples()));
+      lv_label_set_text(s_menuBtnLabel, "Stop");
+      break;
+    }
+  }
+}
+
+void onMenuButton(lv_event_t *) {
+  if (battery::calState() == battery::CalState::Idle) battery::calStart();
+  else battery::calStop();
+  hal::haptic(hal::Haptic::Click);
+  menuRefresh();
+}
+
+void onMenuClose(lv_event_t *);
+
+void buildMenu() {
+  s_menu = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(s_menu, LV_PCT(100), LV_PCT(100));
+  lv_obj_center(s_menu);
+  lv_obj_set_style_bg_color(s_menu, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(s_menu, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(s_menu, 0, 0);
+  lv_obj_set_style_radius(s_menu, 0, 0);
+  lv_obj_set_style_pad_hor(s_menu, 48, 0);  // keep text inside the round glass
+  lv_obj_set_style_pad_ver(s_menu, 40, 0);
+  lv_obj_set_flex_flow(s_menu, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(s_menu, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(s_menu, 10, 0);
+  lv_obj_set_scroll_dir(s_menu, LV_DIR_VER);
+
+  lv_obj_t *title = lv_label_create(s_menu);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+  lv_label_set_text(title, "Debug");
+
+  auto text = [](lv_obj_t *parent) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_obj_set_width(l, LV_PCT(100));
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(0xC8C8C8), 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    return l;
+  };
+  s_menuInfo = text(s_menu);
+  s_menuCal = text(s_menu);
+
+  auto button = [](lv_obj_t *parent, lv_event_cb_t cb, lv_obj_t **labelOut) {
+    lv_obj_t *b = lv_btn_create(parent);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *l = lv_label_create(b);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
+    if (labelOut) *labelOut = l;
+    return l;
+  };
+  button(s_menu, onMenuButton, &s_menuBtnLabel);
+  lv_label_set_text(button(s_menu, onMenuClose, nullptr), "Close");
+}
+
+void openMenu(bool open) {
+  s_menuOpen = open;
+  if (open) {
+    if (!s_menu) buildMenu();
+    lv_obj_clear_flag(s_menu, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_scroll_to_y(s_menu, 0, LV_ANIM_OFF);
+    menuRefresh();
+    s_menuRefreshMs = millis();
+  } else if (s_menu) {
+    lv_obj_add_flag(s_menu, LV_OBJ_FLAG_HIDDEN);
+  }
+  hal::haptic(hal::Haptic::Bump);
+}
+
+void onMenuClose(lv_event_t *) { openMenu(false); }
 
 // Black arrowhead sitting on a ring, pointing inward. (ux, uy) is the unit direction from the
 // centre in LV_TRIGO fixed point.
@@ -598,7 +708,7 @@ void setScreen(bool on) {
   if (on) s_wakeMs = millis();
 }
 
-bool onUsb() { return s_battV >= kUsbThresholdV; }
+bool onUsb() { return battery::onUsb(); }
 }  // namespace
 
 bool wantsDeepSleep() { return s_wantSleep; }
@@ -611,15 +721,34 @@ void tick(int32_t knobDelta) {
   if (knobDelta != 0) s_lastKnobMs = millis();
   if (touched || knobDelta != 0) s_lastInputMs = millis();
   const uint32_t idleMs = millis() - s_lastInputMs;
+  // Calibrating = a constant, high load until the battery dies: never dim or sleep.
+  const bool calibrating = battery::calState() != battery::CalState::Idle;
   if (!s_screenOn) {
-    if (touched || knobDelta != 0) setScreen(true);  // the waking input does nothing else
+    if (touched || knobDelta != 0 || calibrating) setScreen(true);  // the waking input does nothing else
     knobDelta = 0;
-  } else if (idleMs > SCREEN_TIMEOUT_MS) {
+  } else if (idleMs > SCREEN_TIMEOUT_MS && !calibrating && !s_menuOpen) {
     setScreen(false);
   }
   // Deep sleep once idle long enough and nothing is still waiting to be sent to a bulb.
-  if (idleMs > DEEP_SLEEP_AFTER_MS && (DEEP_SLEEP_ON_USB || !onUsb()) && lights::idle()) {
+  if (idleMs > DEEP_SLEEP_AFTER_MS && !calibrating && !s_menuOpen && (DEEP_SLEEP_ON_USB || !onUsb()) &&
+      lights::idle()) {
     s_wantSleep = true;
+  }
+
+  // Secret menu: hold the centre still for 10 s (toggles; one toggle per hold).
+  const uint32_t held = hal::centreHoldMs(kMenuHoldRadiusPx);
+  if (held == 0) {
+    s_holdLatched = false;
+  } else if (held >= kMenuHoldMs && !s_holdLatched) {
+    s_holdLatched = true;
+    openMenu(!s_menuOpen);
+  }
+  if (s_menuOpen) {
+    knobDelta = 0;  // the dial doesn't control lights behind the menu
+    if (millis() - s_menuRefreshMs > 1000) {
+      s_menuRefreshMs = millis();
+      menuRefresh();
+    }
   }
 
   if (knobDelta != 0) applyKnob(knobDelta);

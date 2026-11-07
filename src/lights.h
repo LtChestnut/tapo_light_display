@@ -55,6 +55,9 @@ uint32_t revision();
 // Thread-safe copy of a bulb's cached state.
 Bulb get(int index);
 
+// Configured IP address of a bulb (from secrets.h).
+const char *ip(int index);
+
 // target = bulb index or kAll.
 void setPower(int target, bool on);
 void setBrightness(int target, uint8_t percent);  // also turns the bulb(s) on

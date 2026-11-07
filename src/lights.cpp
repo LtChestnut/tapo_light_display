@@ -401,6 +401,8 @@ void prepareSleep() {
 NetStatus netStatus() { return s_net.load(); }
 uint32_t revision() { return s_rev.load(); }
 
+const char *ip(int index) { return index >= 0 && index < kCount ? kIps[index] : ""; }
+
 Bulb get(int index) {
   if (index < 0 || index >= kCount) return Bulb{};
   Lock l;

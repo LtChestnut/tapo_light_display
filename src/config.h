@@ -26,3 +26,6 @@
 #ifndef TOUCH_WAKE
 #define TOUCH_WAKE 0
 #endif
+
+// Firmware version shown in the secret menu (the git hash is added at build time).
+#define FW_VERSION "1.0"

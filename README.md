@@ -23,6 +23,8 @@ The **dial is the main control**. The touchscreen is used for swipes only, plus 
 - **Battery:** percentage in the gap at the bottom of the dial; a USB symbol when plugged in.
 - Changes made in the Tapo app appear on the knob within about 5 s.
 
+**Secret menu:** hold a finger still on the centre of the screen for 10 s. It shows the version and git hash, Wi-Fi network/IP, each light with its IP and whether it's reachable, and the battery voltage. It also holds the **battery calibration**: charge fully, press Start, unplug, and leave it until it dies (a few hours at full load). On the next boot the knob turns the logged discharge into its own voltage → % curve. `cal status` / `cal dump` on the serial port show the result and the raw log.
+
 **Power:**
 
 | State | When | Notes |
@@ -157,7 +159,7 @@ Done: bring-up, Wi-Fi, KLAP client, controller UI, colour/temperature modes, hap
 
 Next:
 1. **Wake check:** fixed IP + Wi-Fi-first boot cut a cold boot to Wi-Fi from 6.7 s to 0.5 s. Confirm the same on a real deep-sleep wake, and look at the occasional "no HTTP status" on the first request after a wake.
-2. **Measure battery life** (700 mAh cell), and decide whether touch-to-wake is affordable.
+2. **Run the battery calibration** (secret menu), then measure real battery life (700 mAh cell) and decide whether touch-to-wake is affordable.
 3. On-device setup (captive portal) instead of `secrets.h`; OTA updates.
 
 ## References
