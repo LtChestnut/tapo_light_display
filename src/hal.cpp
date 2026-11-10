@@ -21,6 +21,7 @@ constexpr size_t kDrawBufRows = 72;
 
 ESP_PanelBacklightPWM_LEDC *s_backlight = nullptr;
 ESP_PanelLcd *s_lcd = nullptr;
+ESP_PanelBusQSPI *s_lcdBus = nullptr;
 ESP_PanelTouch *s_touch = nullptr;
 
 lv_disp_draw_buf_t s_drawBuf;
@@ -164,6 +165,7 @@ void initHaptics() {
 // ---- Bring-up -------------------------------------------------------------
 
 void initBacklight() {
+  gpio_hold_dis(static_cast<gpio_num_t>(PIN_LCD_BL));  // held low through deep sleep
   s_backlight = new ESP_PanelBacklightPWM_LEDC(PIN_LCD_BL, true);
   s_backlight->begin();
   s_backlight->off();
@@ -183,6 +185,7 @@ void initLcd() {
   auto *bus = new ESP_PanelBusQSPI(PIN_LCD_CS, PIN_LCD_SCK, PIN_LCD_D0, PIN_LCD_D1, PIN_LCD_D2, PIN_LCD_D3);
   bus->configQspiFreqHz(kQspiFreqHz);
   bus->begin();
+  s_lcdBus = bus;
 
   s_lcd = new ESP_PanelLcd_ST77916(bus, 16, PIN_LCD_RST);
   s_lcd->configVendorCommands(kSt77916InitCmds, sizeof(kSt77916InitCmds) / sizeof(kSt77916InitCmds[0]));
@@ -259,13 +262,28 @@ void begin() {
 }
 
 void deepSleep(bool touchWake) {
-  // Display: backlight off (the gate pull-down keeps it off while the S3 sleeps), then the
-  // panel controller into its sleep mode.
+  // Display. The backlight is LEDC PWM on GPIO47, a digital (non-RTC) pin: in deep sleep the
+  // S3 releases it and it floats, which let the backlight come back on over a frozen frame.
+  // So take it off LEDC, drive it low and latch it with the deep-sleep pad hold.
   if (s_backlight) {
     s_backlight->setBrightness(0);
     s_backlight->off();
   }
-  if (s_lcd) esp_lcd_panel_disp_sleep(s_lcd->getHandle(), true);
+  const auto bl = static_cast<gpio_num_t>(PIN_LCD_BL);
+  gpio_reset_pin(bl);
+  gpio_set_direction(bl, GPIO_MODE_OUTPUT);
+  gpio_set_level(bl, 0);
+  gpio_hold_en(bl);
+  gpio_deep_sleep_hold_en();
+
+  // Panel: the driver has no disp_sleep for the ST77916, so send DISPOFF (0x28) and SLPIN
+  // (0x10) ourselves, in the QSPI command framing the driver uses (opcode 0x02, cmd << 8).
+  if (s_lcdBus) {
+    auto io = s_lcdBus->getControlPanelHandle();
+    esp_lcd_panel_io_tx_param(io, (0x02 << 24) | (0x28 << 8), nullptr, 0);
+    esp_lcd_panel_io_tx_param(io, (0x02 << 24) | (0x10 << 8), nullptr, 0);
+    delay(10);  // SLPIN needs 5 ms before anything else
+  }
 
   // Haptics: standby (MODE bit 6).
   if (s_haptics) drvWrite(0x01, 0x40);
@@ -279,9 +297,17 @@ void deepSleep(bool touchWake) {
   if (s_knobTimer) esp_timer_stop(s_knobTimer);
 
   // Wake on either knob pin going low (both are RTC GPIOs with 10 k external pull-ups),
-  // plus the touch interrupt if enabled.
-  uint64_t mask = (1ULL << PIN_ENC_A) | (1ULL << PIN_ENC_B);
+  // plus the touch interrupt if enabled. A pin that is already low would wake us at once
+  // (and loop): give it a moment to release, and leave out any pin that stays low.
+  uint64_t mask = 0;
+  for (int pin : {PIN_ENC_A, PIN_ENC_B}) {
+    const uint32_t t0 = millis();
+    while (digitalRead(pin) == LOW && millis() - t0 < 1000) delay(5);
+    if (digitalRead(pin) == LOW) Serial.printf("[hal] knob pin %d stuck low; not a wake source\n", pin);
+    else mask |= 1ULL << pin;
+  }
   if (touchWake) mask |= 1ULL << PIN_TP_INT;
+  if (mask == 0) mask = 1ULL << PIN_ENC_A;  // never sleep with no way to wake
   for (int pin : {PIN_ENC_A, PIN_ENC_B, PIN_TP_INT}) {
     if (!(mask & (1ULL << pin))) continue;
     rtc_gpio_init(static_cast<gpio_num_t>(pin));
@@ -292,7 +318,7 @@ void deepSleep(bool touchWake) {
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);  // keep RTC pull-ups alive
   esp_sleep_enable_ext1_wakeup(mask, ESP_EXT1_WAKEUP_ANY_LOW);
 
-  Serial.printf("[hal] deep sleep (wake: knob%s)\n", touchWake ? " + touch" : "");
+  Serial.printf("[hal] deep sleep (wake mask 0x%llx)\n", mask);
   Serial.flush();
   delay(20);
   esp_deep_sleep_start();

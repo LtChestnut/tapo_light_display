@@ -20,6 +20,14 @@ void setup() {
     Serial.printf("[app] wake pin mask 0x%llx\n", pins);
   }
 
+  // Battery already cut off and not recharged: show the message and go straight back to
+  // sleep, without starting Wi-Fi (the knob still wakes it, so the user sees why).
+  if (battery::bootIsEmpty()) {
+    hal::begin();
+    ui::showLowBattery(LOW_BATT_MESSAGE_MS);
+    hal::deepSleep(false);
+  }
+
   // Start Wi-Fi first so it joins while the display initialises (~1 s) on the other core.
   lights::begin(fromSleep);  // Wi-Fi + Tapo I/O run on core 0; LVGL stays on this loop (core 1)
   hal::begin();
@@ -41,6 +49,17 @@ void loop() {
   ui::tick(hal::takeKnobDelta());
   lv_timer_handler();
 
+  if (battery::empty()) {
+    // Low-battery cutoff: overrides calibration and the open menu. A calibration run that
+    // ends here is processed on the next boot that isn't still empty, with 0 % = the cutoff.
+    ui::showLowBattery(LOW_BATT_MESSAGE_MS);
+    if (battery::onUsb() && !LOW_BATT_ON_USB) {
+      battery::clearEmpty();  // plugged in (charging): never deep sleep on USB
+    } else {
+      lights::prepareSleep();
+      hal::deepSleep(false);
+    }
+  }
   if (ui::wantsDeepSleep()) {
     lights::prepareSleep();     // flushes nothing new; persists state and turns Wi-Fi off
     hal::deepSleep(TOUCH_WAKE);  // does not return; wake = reboot

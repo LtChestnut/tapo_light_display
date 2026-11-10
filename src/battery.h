@@ -20,6 +20,14 @@ bool onUsb();    // supply is USB (we then can't see the battery itself)
 int percent();   // 0-100 estimate; meaningless while onUsb()
 bool calibrated();  // using a measured curve rather than the generic Li-ion one
 
+// Low-battery cutoff (config.h). bootIsEmpty() needs no other init and is meant to be called
+// first in setup(): true = the battery was already cut off and hasn't recovered, so show
+// the message and sleep again without starting anything else. empty() becomes true while
+// running once the loaded voltage stays below the cutoff (or after `batt low` on serial).
+bool bootIsEmpty();
+bool empty();
+void clearEmpty();  // e.g. USB was plugged in: back to normal
+
 enum class CalState : uint8_t { Idle, Armed, Running };
 CalState calState();
 void calStart();  // arm: logging begins when USB is unplugged

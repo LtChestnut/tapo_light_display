@@ -18,4 +18,8 @@ void tick(int32_t knobDelta);
 // True once the UI has been idle long enough to deep sleep (see config.h).
 bool wantsDeepSleep();
 
+// Full-screen "Battery low" message over everything. Works without begin() (only needs the
+// LVGL display from hal::begin()). Pumps LVGL for `ms`, then returns; the caller sleeps.
+void showLowBattery(uint32_t ms);
+
 }  // namespace ui

@@ -25,6 +25,8 @@ The **dial is the main control**. The touchscreen is used for swipes only, plus 
 
 **Secret menu:** hold a finger still on the centre of the screen for 10 s. It shows the version and git hash, Wi-Fi network/IP, each light with its IP and whether it's reachable, and the battery voltage. It also holds the **battery calibration**: charge fully, press Start, unplug, and leave it until it dies (a few hours at full load). On the next boot the knob turns the logged discharge into its own voltage → % curve. `cal status` / `cal dump` on the serial port show the result and the raw log.
 
+**Low battery:** below 3.3 V (under load) the knob shows "Battery low – please charge" and goes to sleep, to avoid deep-discharging the cell. Twisting it still wakes it, but it only shows the message again until it has been charged. The battery % reads 0 % at the cutoff. On the measured cell this costs about 7 % of the runtime: at full load it's ~3 h 15 min of 3 h 31 min, about 200 mA.
+
 **Power:**
 
 | State | When | Notes |

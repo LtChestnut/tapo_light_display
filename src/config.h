@@ -27,5 +27,24 @@
 #define TOUCH_WAKE 0
 #endif
 
+// Low-battery cutoff, on battery only. Below LOW_BATT_CUTOFF_MV (under load, 3 readings
+// 5 s apart) the knob shows "Battery low" and deep sleeps. The calibration run (2026-11-07)
+// reached 3.3 V at 93 % of its runtime and fell off a cliff after it. Twisting the knob
+// still wakes it, but until the cell rests above LOW_BATT_RECOVER_MV (or USB is plugged
+// in) it only shows the message and goes back to sleep, without starting Wi-Fi. The battery %
+// is scaled so that 0 % = the cutoff.
+#ifndef LOW_BATT_CUTOFF_MV
+#define LOW_BATT_CUTOFF_MV 3300
+#endif
+#ifndef LOW_BATT_RECOVER_MV
+#define LOW_BATT_RECOVER_MV 3450  // an empty cell rebounds ~0.1-0.2 V once the load is off
+#endif
+#ifndef LOW_BATT_ON_USB  // 1 = apply the cutoff on USB too (bench testing with a high cutoff)
+#define LOW_BATT_ON_USB 0
+#endif
+#ifndef LOW_BATT_MESSAGE_MS
+#define LOW_BATT_MESSAGE_MS 3000
+#endif
+
 // Firmware version shown in the secret menu (the git hash is added at build time).
-#define FW_VERSION "1.0"
+#define FW_VERSION "1.1"

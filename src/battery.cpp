@@ -3,9 +3,11 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <esp_attr.h>
 
 #include <vector>
 
+#include "config.h"
 #include "hal.h"
 
 namespace battery {
@@ -54,6 +56,21 @@ uint32_t s_samples = 0;
 int s_belowUsbCount = 0;
 char s_lastResult[96] = "";
 String s_cmd;
+
+// Low-battery cutoff. The latch lives in RTC memory, so it survives deep sleep but clears
+// on a power cycle or reset.
+RTC_DATA_ATTR bool s_lowLatched = false;
+bool s_empty = false;
+int s_belowCutoffCount = 0;
+constexpr int kCutoffSamples = 3;  // 3 x 5 s below the cutoff: ignores Wi-Fi TX dips
+
+bool cutoffApplies(float v) { return LOW_BATT_ON_USB || v < kUsbLeaveV; }
+
+void setEmpty(const char *why) {
+  if (s_empty) return;
+  s_empty = s_lowLatched = true;
+  Serial.printf("[battery] EMPTY (%s, %.3f V): low-battery shutdown\n", why, s_volts);
+}
 
 void saveState() { s_prefs.putUChar("calState", static_cast<uint8_t>(s_cal)); }
 
@@ -162,6 +179,10 @@ void printCurve() {
 }
 
 void handleCommand(const String &cmd) {
+  if (cmd == "batt low") {
+    setEmpty("forced from serial");
+    return;
+  }
   if (cmd == "cal dump") {
     File f = LittleFS.exists(kLogPath) ? LittleFS.open(kLogPath, "r") : File();
     if (!f) {
@@ -204,6 +225,7 @@ void handleCommand(const String &cmd) {
     s_lastResult[0] = '\0';
     Serial.println("[battery] curve, log and last result cleared; back to the generic Li-ion curve");
   } else if (cmd.length()) {
+    Serial.println("[battery] commands: batt low (simulate the low-battery cutoff)");
     Serial.println("[battery] commands: cal status | cal dump | cal reprocess | cal reset (clears curve + log)");
   }
 }
@@ -253,6 +275,11 @@ void service() {
     s_lastSampleMs = now;
     s_volts = s_volts * 0.7f + readVolts() * 0.3f;  // light smoothing
     updateUsb();
+    if (cutoffApplies(s_volts) && s_volts * 1000.0f < LOW_BATT_CUTOFF_MV) {
+      if (++s_belowCutoffCount >= kCutoffSamples) setEmpty("below cutoff");
+    } else {
+      s_belowCutoffCount = 0;
+    }
   }
 
   switch (s_cal) {
@@ -286,13 +313,45 @@ float volts() { return s_volts; }
 bool onUsb() { return s_onUsb; }
 bool calibrated() { return s_hasCurve; }
 
-int percent() {
-  const float mv = s_volts * 1000.0f;
+bool bootIsEmpty() {
+  const float v = hal::supplyVolts();  // plain ADC read; nothing else is running yet
+  if (!cutoffApplies(v) || v * 1000.0f >= LOW_BATT_RECOVER_MV) {
+    s_lowLatched = false;  // charged (or on USB): back to normal
+    return false;
+  }
+  // Latched: stay off until it has recovered. Not latched: only a cell already below the
+  // cutoff with no load on it counts; a marginal one gets caught by the loaded check.
+  if (s_lowLatched || v * 1000.0f < LOW_BATT_CUTOFF_MV) {
+    s_lowLatched = true;
+    Serial.printf("[battery] %.3f V at boot: still empty\n", v);
+    return true;
+  }
+  return false;
+}
+
+bool empty() { return s_empty; }
+
+void clearEmpty() {
+  s_empty = s_lowLatched = false;
+  s_belowCutoffCount = 0;
+}
+
+namespace {
+int rawPercent(float mv) {
   if (s_hasCurve) {
     static const uint8_t kPct[kCurvePoints] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
     return interpolate(mv, s_curveMv, kPct, kCurvePoints);
   }
   return interpolate(mv, kDefaultMv, kDefaultPct, sizeof(kDefaultPct));
+}
+}  // namespace
+
+int percent() {
+  // Rescale so the cutoff is 0 %: the curve's own 0 % is where the cell actually died.
+  const int cut = rawPercent(LOW_BATT_CUTOFF_MV);
+  const int raw = rawPercent(s_volts * 1000.0f);
+  if (raw <= cut) return 0;
+  return cut >= 100 ? 100 : (raw - cut) * 100 / (100 - cut);
 }
 
 CalState calState() { return s_cal; }

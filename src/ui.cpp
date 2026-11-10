@@ -713,6 +713,45 @@ bool onUsb() { return battery::onUsb(); }
 
 bool wantsDeepSleep() { return s_wantSleep; }
 
+void showLowBattery(uint32_t ms) {
+  lv_obj_t *p = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(p);
+  lv_obj_set_size(p, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_color(p, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+  lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(p, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_row(p, 12, 0);
+
+  lv_obj_t *icon = lv_label_create(p);
+  lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(icon, lv_color_hex(0xFF5040), 0);
+  lv_label_set_text(icon, LV_SYMBOL_BATTERY_EMPTY);
+
+  lv_obj_t *title = lv_label_create(p);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(title, lv_color_white(), 0);
+  lv_label_set_text(title, "Battery low");
+
+  lv_obj_t *sub = lv_label_create(p);
+  lv_obj_set_style_text_font(sub, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(sub, kDimText, 0);
+  lv_label_set_text(sub, "Please charge");
+
+  hal::setBacklight(100);
+  hal::haptic(hal::Haptic::Bump);
+  const uint32_t start = millis();
+  while (millis() - start < ms) {
+    lv_timer_handler();
+    delay(5);
+  }
+  // Remove it again. If the caller sleeps next, the panel keeps showing the last frame
+  // until the backlight goes off; otherwise the normal UI is redrawn on the next tick.
+  lv_obj_del(p);
+  s_lastInputMs = millis();  // count the message as activity before the screen times out
+  if (!s_screenOn) hal::setBacklight(0);
+}
+
 void tick(int32_t knobDelta) {
   // Display sleep. Touch activity comes from LVGL's inactivity timer; knob from here.
   const uint32_t touchIdle = lv_disp_get_inactive_time(nullptr);
@@ -724,9 +763,15 @@ void tick(int32_t knobDelta) {
   // Calibrating = a constant, high load until the battery dies: never dim or sleep.
   const bool calibrating = battery::calState() != battery::CalState::Idle;
   if (!s_screenOn) {
-    if (touched || knobDelta != 0 || calibrating) setScreen(true);  // the waking input does nothing else
+    if (touched || knobDelta != 0 || calibrating) {
+      Serial.printf("[ui] screen on: %s (knob %ld, touch idle %lu ms)\n",
+                    touched ? "touch" : knobDelta ? "knob" : "calibrating", static_cast<long>(knobDelta),
+                    static_cast<unsigned long>(touchIdle));
+      setScreen(true);  // the waking input does nothing else
+    }
     knobDelta = 0;
   } else if (idleMs > SCREEN_TIMEOUT_MS && !calibrating && !s_menuOpen) {
+    Serial.println("[ui] screen off (idle)");
     setScreen(false);
   }
   // Deep sleep once idle long enough and nothing is still waiting to be sent to a bulb.
